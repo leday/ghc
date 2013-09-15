@@ -17,6 +17,8 @@ import MkIface
 import Id
 import Name
 import Type
+import Coercion
+import DataCon (dataConWorkId)
 import InstEnv
 import Class
 import Avail
@@ -32,8 +34,12 @@ import RdrName
 import NameSet
 import NameEnv
 import Rules
+import TysPrim (eqReprPrimTyCon)
+import TysWiredIn (coercibleTyCon, coercibleDataCon)
+import MkId
 import BasicTypes       ( Activation(.. ) )
 import CoreMonad        ( endPass, CoreToDo(..) )
+import CoreUtils
 import FastString
 import ErrUtils
 import Outputable
@@ -45,6 +51,7 @@ import OrdList
 import Data.List
 import Data.IORef
 import Control.Monad( when )
+import Data.Maybe (fromMaybe)
 \end{code}
 
 %************************************************************************
@@ -339,6 +346,51 @@ Reason
 %************************************************************************
 
 \begin{code}
+
+unfold_coerce :: [Id] -> CoreExpr -> CoreExpr -> DsM ([Var], CoreExpr, CoreExpr)
+unfold_coerce bndrs lhs rhs = do
+    lhs' <- traverse cleanup (substExpr empty subst lhs)
+    return (bndrs', lhs', substExpr empty subst rhs)   
+  where
+    (subst, bndrs') = mapAccumL go emptySubst bndrs
+    go subst v | Just (tc, args) <- splitTyConApp_maybe (idType v)
+               , tc == coercibleTyCon
+               = let v' = setIdType v (mkTyConApp eqReprPrimTyCon (liftedTypeKind : args))
+                     c = Var (dataConWorkId coercibleDataCon) `mkTyApps` args `App` (Coercion (mkCoVarCo v'))
+                 in  (extendIdSubst subst v' c, v')
+               | otherwise
+               = (subst, v)
+    cleanup (Var e `App` Type t1 `App` Type t2 `App` 
+              (Var d `App` Type t1_ `App` Type t2_ `App` Coercion c))
+        | e == coerceId, d == dataConWorkId coercibleDataCon
+        = let [x] = mkTemplateLocals [t1]
+          in return $ Just $ mkCast (Lam x (Var x))
+                 (mkTyConAppCo Representational funTyCon [mkReflCo Representational t1, c])
+    cleanup _ = return $ Nothing
+
+-- Replace an expression everywhere
+traverse :: (Functor m, Applicative m, Monad m) => (Expr a -> m (Maybe (Expr a))) -> Expr a -> m (Expr a)
+traverse f e
+    = f' =<< case e of
+        Type t               -> return $ Type t
+        Coercion c           -> return $ Coercion c
+        Lit lit              -> return $ Lit lit
+        Var v                -> return $ Var v
+        App fun a            -> App <$> traverse f fun <*> traverse f a
+        Tick t e             -> Tick t <$> traverse f e
+        Cast e co            -> Cast <$> traverse f e <*> (return co)
+        Lam b e              -> Lam b <$> traverse f e
+        Let bind e           -> Let <$> traverseBind f bind <*> traverse f e
+        Case scrut bndr ty alts -> Case <$> traverse f scrut <*> pure bndr <*> pure ty <*> mapM (\(a,b,c) -> (\c' -> (a,b,c')) <$> traverse f c) alts 
+    where f' x = do
+            r <- f x
+            return (fromMaybe x r)
+
+traverseBind :: (Functor m, Applicative m, Monad m) => (Expr a -> m (Maybe (Expr a))) -> Bind a -> m (Bind a)
+traverseBind f (NonRec b e) = NonRec b <$> traverse f e
+traverseBind f (Rec l) = Rec <$> mapM (\(a,b) -> (\b -> (a,b)) <$> traverse f b) l
+
+
 dsRule :: LRuleDecl Id -> DsM (Maybe CoreRule)
 dsRule (L loc (HsRule name act vars lhs _tv_lhs rhs _fv_rhs))
   = putSrcSpanDs loc $
@@ -351,9 +403,11 @@ dsRule (L loc (HsRule name act vars lhs _tv_lhs rhs _fv_rhs))
         ; rhs' <- dsLExpr rhs
         ; dflags <- getDynFlags
 
+        ; (bndrs'', lhs'', rhs'') <- unfold_coerce bndrs' lhs' rhs'
+
         -- Substitute the dict bindings eagerly,
         -- and take the body apart into a (f args) form
-        ; case decomposeRuleLhs bndrs' lhs' of {
+        ; case decomposeRuleLhs bndrs'' lhs'' of {
                 Left msg -> do { warnDs msg; return Nothing } ;
                 Right (final_bndrs, fn_id, args) -> do
 
@@ -362,7 +416,7 @@ dsRule (L loc (HsRule name act vars lhs _tv_lhs rhs _fv_rhs))
                 -- we don't want to attach rules to the bindings of implicit Ids,
                 -- because they don't show up in the bindings until just before code gen
               fn_name   = idName fn_id
-              final_rhs = simpleOptExpr rhs'    -- De-crap it
+              final_rhs = simpleOptExpr rhs''    -- De-crap it
               rule      = mkRule False {- Not auto -} is_local
                                  name act fn_name final_bndrs args final_rhs
 
@@ -377,6 +431,8 @@ dsRule (L loc (HsRule name act vars lhs _tv_lhs rhs _fv_rhs))
                     (ActiveAfter {}, AlwaysActive)    -> False
                     (ActiveAfter {}, ActiveBefore {}) -> False
                 | otherwise = False
+
+        ; warnDs (ppr (vars, lhs, rhs) $$ ppr (bndrs',lhs',rhs') $$ ppr (bndrs'', lhs'',rhs'') $$ ppr (final_bndrs, args, final_rhs))
 
         ; when inline_shadows_rule $
           warnDs (vcat [ hang (ptext (sLit "Rule") <+> doubleQuotes (ftext name)

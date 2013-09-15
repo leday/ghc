@@ -35,7 +35,7 @@ module MkId (
         wiredInIds, ghcPrimIds,
         unsafeCoerceName, unsafeCoerceId, realWorldPrimId, 
         voidArgId, nullAddrId, seqId, lazyId, lazyIdKey,
-        coercionTokenId, magicSingIId,
+        coercionTokenId, magicSingIId, coerceId,
 
 	-- Re-export error Ids
 	module PrelRules
@@ -1132,9 +1132,9 @@ coerceId = pcMiscPrelId coerceName ty info
     ty   = mkForAllTys [alphaTyVar, betaTyVar] (mkFunTys [eqRTy, alphaTy] betaTy)
 
     [eqR,x,eq] = mkTemplateLocals [eqRTy, alphaTy,eqRPrimTy]
-    rhs = mkLams [alphaTyVar,betaTyVar,eqR,x] $
-          mkWildCase (Var eqR) eqRTy betaTy $
-	  [(DataAlt coercibleDataCon, [eq], Cast (Var x) (CoVarCo eq))]
+    rhs = mkLams [alphaTyVar,betaTyVar,eqR] $
+          mkWildCase (Var eqR) eqRTy (mkFunTy alphaTy betaTy) $
+	  [(DataAlt coercibleDataCon, [eq], mkLams [x] (Cast (Var x) (CoVarCo eq)))]
 \end{code}
 
 Note [Unsafe coerce magic]
