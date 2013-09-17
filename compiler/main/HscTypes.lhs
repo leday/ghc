@@ -110,7 +110,7 @@ module HscTypes (
 
         -- * Compilation errors and warnings
         SourceError, GhcApiError, mkSrcErr, srcErrorMessages, mkApiErr,
-        throwOneError, handleSourceError,
+        throwOneError, throwManyErrors, handleSourceError,
         handleFlagWarnings, printOrThrowWarnings,
     ) where
 
@@ -242,6 +242,9 @@ mkApiErr dflags msg = GhcApiError (showSDoc dflags msg)
 
 throwOneError :: MonadIO m => ErrMsg -> m ab
 throwOneError err = liftIO $ throwIO $ mkSrcErr $ unitBag err
+
+throwManyErrors :: MonadIO m => [ErrMsg] -> m ab
+throwManyErrors errs = liftIO $ throwIO $ mkSrcErr $ listToBag errs
 
 -- | A source error is an error that is caused by one or more errors in the
 -- source code.  A 'SourceError' is thrown by many functions in the
