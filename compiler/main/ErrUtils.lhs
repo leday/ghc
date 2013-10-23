@@ -63,7 +63,7 @@ type WarningMessages = Bag WarnMsg
 type ErrorMessages   = Bag ErrMsg
 
 data ErrMsg = ErrMsg {
-        errMsgSpans     :: [SrcSpan],
+        errMsgSpans     :: SrcSpan,
         errMsgContext   :: PrintUnqualified,
         errMsgShortDoc  :: MsgDoc,   -- errMsgShort* should always
         errMsgShortString :: String, -- contain the same text
@@ -115,7 +115,7 @@ makeIntoWarning err = err { errMsgSeverity = SevWarning }
 
 mk_err_msg :: DynFlags -> Severity -> SrcSpan -> PrintUnqualified -> MsgDoc -> SDoc -> ErrMsg
 mk_err_msg  dflags sev locn print_unqual msg extra
- = ErrMsg { errMsgSpans = [locn], errMsgContext = print_unqual
+ = ErrMsg { errMsgSpans = locn, errMsgContext = print_unqual
           , errMsgShortDoc = msg , errMsgShortString = showSDoc dflags msg
           , errMsgExtraInfo = extra
           , errMsgSeverity = sev }
@@ -165,29 +165,26 @@ pprErrMsgBagWithLoc :: Bag ErrMsg -> [SDoc]
 pprErrMsgBagWithLoc bag = [ pprLocErrMsg item | item <- sortMsgBag bag ]
 
 pprLocErrMsg :: ErrMsg -> SDoc
-pprLocErrMsg (ErrMsg { errMsgSpans     = spans
+pprLocErrMsg (ErrMsg { errMsgSpans     = s
                      , errMsgShortDoc  = d
                      , errMsgExtraInfo = e
                      , errMsgSeverity  = sev
                      , errMsgContext   = unqual })
   = sdocWithDynFlags $ \dflags ->
     withPprStyle (mkErrStyle dflags unqual) (mkLocMessage sev s (d $$ e))
-  where
-    (s : _) = spans   -- Should be non-empty
 
 printMsgBag :: DynFlags -> Bag ErrMsg -> IO ()
 printMsgBag dflags bag
   = sequence_ [ let style = mkErrStyle dflags unqual
                 in log_action dflags dflags sev s style (d $$ e)
-              | ErrMsg { errMsgSpans     = s:_,
+              | ErrMsg { errMsgSpans     = s,
                          errMsgShortDoc  = d,
                          errMsgSeverity  = sev,
                          errMsgExtraInfo = e,
                          errMsgContext   = unqual } <- sortMsgBag bag ]
 
 sortMsgBag :: Bag ErrMsg -> [ErrMsg]
-sortMsgBag bag = sortBy (comparing (head . errMsgSpans)) $ bagToList bag
-                 -- TODO: Why "head ."? Why not compare the whole list?
+sortMsgBag bag = sortBy (comparing errMsgSpans) $ bagToList bag
 
 ghcExit :: DynFlags -> Int -> IO ()
 ghcExit dflags val
