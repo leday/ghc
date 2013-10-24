@@ -83,6 +83,7 @@ data Severity
   | SevWarning
   | SevError
   | SevFatal
+  deriving Eq
 
 instance Show ErrMsg where
     show em = errMsgShortString em
@@ -176,12 +177,32 @@ pprLocErrMsg (ErrMsg { errMsgSpans     = s
 printMsgBag :: DynFlags -> Bag ErrMsg -> IO ()
 printMsgBag dflags bag
   = sequence_ [ let style = mkErrStyle dflags unqual
-                in log_action dflags dflags sev s style (d $$ e)
-              | ErrMsg { errMsgSpans     = s,
-                         errMsgShortDoc  = d,
-                         errMsgSeverity  = sev,
-                         errMsgExtraInfo = e,
-                         errMsgContext   = unqual } <- sortMsgBag bag ]
+                    extraloc | null ss = empty
+                             | otherwise = parens $ text "also at" <+> pprWithCommas ppr ss
+                in log_action dflags dflags sev s style (d $$ e $$ extraloc)
+              | (ErrMsg { errMsgSpans     = s,
+                          errMsgShortDoc  = d,
+                          errMsgSeverity  = sev,
+                          errMsgExtraInfo = e,
+                          errMsgContext   = unqual }, ss) <- groupAndSortBag bag ]
+
+-- | Returns unique (up to their SrcSpan) error message, sorted by the first occurring
+--   SrcSpan, together with other SrcSpan where the error is occuring.
+groupAndSortBag :: Bag ErrMsg -> [ (ErrMsg, [SrcSpan]) ]
+groupAndSortBag bag = group [] $ sortMsgBag bag
+  where
+    -- We sort first by span, so that we have the right (the first) SrcSpan in
+    -- the retained ErrMsg
+    group r [] = r
+    group r (e:es) = group (insert e r) es
+    insert e [] = [(e,[])]
+    insert e ((e',ss):es) =
+        if -- errMsgContext e     == errMsgContext e' &&
+           errMsgShortString e == errMsgShortString e' &&
+           -- errMsgExtraInfo e   == errMsgExtraInfo e' &&
+           errMsgSeverity e    == errMsgSeverity e'
+        then ((e',ss++[errMsgSpans e]) : es)
+        else ((e',ss):insert e es) 
 
 sortMsgBag :: Bag ErrMsg -> [ErrMsg]
 sortMsgBag bag = sortBy (comparing errMsgSpans) $ bagToList bag
